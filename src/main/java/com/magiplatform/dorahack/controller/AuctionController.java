@@ -77,6 +77,11 @@ public class AuctionController {
                 .orderByDesc(Auction::getAuctionRound)
                 .last("limit 0,1");
         List<Auction> list = auctionService.list(queryWrapper);
+        
+        if(list.size()==0) {
+        	return ResultDto.success(list);
+        }
+        
         String largestRound = list.get(0).getAuctionRound(); // this logic is not optimized
 
         queryWrapper = new QueryWrapper<>();
@@ -100,6 +105,10 @@ public class AuctionController {
         artwork.setUpdateTime(LocalDateTime.now());
         boolean b = artworkService.updateById(artwork);
 
+        if(!b) {
+        	return ResultDto.failure("-1", "artId不存在");
+        }
+        
         // 查询藏品id最大轮次的竞拍记录
         QueryWrapper<Auction> queryWrapper = new QueryWrapper<>();
         queryWrapper.lambda()
@@ -126,11 +135,16 @@ public class AuctionController {
             auction.setBidCapPrice(new BigDecimal(AuctionConstants.AUCTION_DEFAULT_INITIAL_PRICE * AuctionConstants.AUCTION_PRICE_CAP_RATIO));
         } else {
             Auction maxAuction = list.get(0);
+            
+            if(maxAuction.getBidPrice().compareTo(maxAuction.getStartBidPrice())<0) {
+            	return ResultDto.failure("-1", "上轮竞价未完成");
+            }
+            
             auction.setAuctionRound(String.valueOf(Integer.parseInt(maxAuction.getAuctionRound()) + 1));
             auction.setStartBidPrice(maxAuction.getBidPrice());
             auction.setBidCapPrice(maxAuction.getBidPrice().multiply(new BigDecimal(AuctionConstants.AUCTION_PRICE_CAP_RATIO)));
         }
-        auction.setBidUesrId("0");
+        auction.setBidUserId("0");
         auction.setBidPrice(new BigDecimal("0"));
         auction.setIsHighestBid("true");
 
@@ -150,7 +164,7 @@ public class AuctionController {
             @RequestParam String bidUserId
     ) {
         BigDecimal bidPriceBig = new BigDecimal(bidPrice);
-
+        
         // 查询藏品id最大轮次的竞拍记录
         QueryWrapper<Auction> queryWrapper = new QueryWrapper<>();
         queryWrapper.lambda()
@@ -160,16 +174,22 @@ public class AuctionController {
                 .last("limit 1");
         Auction currentHighestBid = auctionService.getOne(queryWrapper);
 
+        if(currentHighestBid==null) {
+        	return ResultDto.failure("-1", "未找到artId对应的auction，出价失败");
+        }
+        
         if (AuctionConstants.StatusEnum.FINISHED.getCode().equals(currentHighestBid.getStatus())) {
             return ResultDto.failure("-1", "This round is already closed.");
         }
+        
         else if (bidPriceBig.compareTo(currentHighestBid.getBidCapPrice()) > 0) {
             // user's bid > price cap
             return ResultDto.failure("-1", "Price cap for round " + currentHighestBid.getAuctionRound()
                     + " is " + currentHighestBid.getBidCapPrice());
         }
-        else if (currentHighestBid.getBidPrice().compareTo(bidPriceBig) > 0 ||
-                (currentHighestBid.getBidPrice().compareTo(bidPriceBig) == 0 && bidPriceBig.compareTo(currentHighestBid.getBidCapPrice()) < 0)) {
+        else if (bidPriceBig.compareTo(currentHighestBid.getStartBidPrice()) < 0 ||
+        		currentHighestBid.getBidPrice().compareTo(bidPriceBig) > 0  ||
+                currentHighestBid.getBidPrice().compareTo(bidPriceBig) == 0 && bidPriceBig.compareTo(currentHighestBid.getBidCapPrice()) < 0) {
             // current highest bid > user's bid
             // Or current highest bid = user's bid < price cap
             return ResultDto.failure("-1", "Your bid price is too low. ");
@@ -179,7 +199,7 @@ public class AuctionController {
         Auction newHighestBid = new Auction();
         BeanUtils.copyProperties(currentHighestBid, newHighestBid);
         newHighestBid.setId(String.valueOf(customIdGenerator.nextUUID(newHighestBid)));
-        newHighestBid.setBidUesrId(bidUserId);
+        newHighestBid.setBidUserId(bidUserId);
         newHighestBid.setBidPrice(bidPriceBig);
         newHighestBid.setBidTime(LocalDateTime.now());
         newHighestBid.setCreateTime(LocalDateTime.now());
@@ -204,48 +224,69 @@ public class AuctionController {
     public ResultDto<List<Auction>> idPay(
             HttpServletRequest request,
             @RequestParam String artId,
-            @RequestParam String auctionRound,
-            @RequestParam String paidPrice,
-            @RequestParam String bidUserId
+            @RequestParam String auctionRound
+            
     ) {
         // TODO: call BSC to process the payment
         // Assuming payment is successful, here.
 
-        BigDecimal paidPriceBig = new BigDecimal(paidPrice);
+        
 
         // 1. update owner_id, status of artwork_table
         Artwork artwork = artworkService.getById(artId);
-        System.out.println("artId is ");
-        System.out.println(artId);
-
-        String currentOwner = artwork.getUserId();
-        artwork.setUserId(bidUserId); // the bid user ID is user ID in artwork table
-        artwork.setStatus(ArtworkConstants.StatusEnum.FINISHED.getCode());
-        boolean save = artworkService.updateById(artwork);
-        if (!save) {
-            ResultDto.failure("-1", "写入artwork_table失败");
+        
+        if(artwork==null) {
+        	return ResultDto.failure("-1", "未找到artid对应的artwork");
         }
+        
+        System.out.println("artId is " + artId);
+        
 
-        // 2。 update auction_status of auction_table (happening -> finished)
+        
+
+        // 2. update auction_status of auction_table (happening -> finished)
+        QueryWrapper<Auction> queryWrapper = new QueryWrapper<>();
+        queryWrapper.lambda()
+                .eq(Auction::getArtId, artId)
+                .eq(Auction::getAuctionRound, auctionRound)
+                .eq(Auction::getIsHighestBid, "true")
+                .ne(Auction::getBidUserId, "0")
+                .last("limit 1");
+        Auction currentHighestBid = auctionService.getOne(queryWrapper);
+        
+        if(currentHighestBid==null) {
+        	return ResultDto.failure("-1", "未找到artId对应的auction，付款失败");
+        }
+        
+        
+                
         LambdaUpdateWrapper<Auction> lambda = new UpdateWrapper().lambda();
         lambda
                 .eq(Auction::getArtId, artId)
                 .eq(Auction::getAuctionRound, auctionRound)
                 .eq(Auction::getStatus, AuctionConstants.StatusEnum.HAPPENING.getCode())
                 .set(Auction::getStatus, AuctionConstants.StatusEnum.FINISHED.getCode());
-        save = auctionService.update(lambda);
+        boolean save = auctionService.update(lambda);
         if (!save) {
-            ResultDto.failure("-1", "写入auction_table失败");
+        	return ResultDto.failure("-1", "写入auction_table失败");
+        }
+        
+        String currentOwner = artwork.getUserId();
+        artwork.setUserId(currentHighestBid.getBidUserId()); // the bid user ID is user ID in artwork table
+        artwork.setStatus(ArtworkConstants.StatusEnum.FINISHED.getCode());
+        save = artworkService.updateById(artwork);
+        if (!save) {
+        	return ResultDto.failure("-1", "写入artwork_table失败");
         }
 
         // 3. add new record in trans_history
         TransHistory transHistory = new TransHistory();
-        transHistory.setId(String.valueOf(customIdGenerator.nextId(paidPrice)));
+        transHistory.setId(String.valueOf(customIdGenerator.nextId(currentHighestBid.getBidPrice())));
         transHistory.setArtId(artId);
         transHistory.setAuctionRound(auctionRound);
         transHistory.setSellerId(currentOwner);
-        transHistory.setHighestBidUserId(bidUserId);
-        transHistory.setHighestBidPrice(new BigDecimal(paidPrice));
+        transHistory.setHighestBidUserId(currentHighestBid.getBidUserId());
+        transHistory.setHighestBidPrice(currentHighestBid.getBidPrice());
         transHistory.setPaymentEndTime(LocalDateTime.now());
         transHistory.setPaymentStatus(PaymentConstants.StatusEnum.SUCCESS.getCode());
 
@@ -253,6 +294,8 @@ public class AuctionController {
         return save
                 ? ResultDto.success("支付流水记录完成")
                 : ResultDto.failure("-1", "写入trans_history失败");
+        
+        
     }
 
 }

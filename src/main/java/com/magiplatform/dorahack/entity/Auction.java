@@ -48,7 +48,7 @@ public class Auction implements Serializable {
 
     private BigDecimal bidCapPrice;
 
-    private String bidUesrId;
+    private String bidUserId;
 
     /**
      * 出价价格

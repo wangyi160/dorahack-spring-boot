@@ -53,8 +53,15 @@ public class UserController {
         User user = new User();
         user.setId(id);
         user.setCreateTime(LocalDateTime.now());
-        boolean b = userService.save(user);
-        return b ? ResultDto.success("添加成功") : ResultDto.failure("-1", "添加失败");
+        try {
+        	boolean b = userService.save(user);
+        	return b ? ResultDto.success("添加成功") : ResultDto.failure("-1", "添加失败");
+        }
+        catch(Exception e) {
+        	e.printStackTrace();
+        	return ResultDto.failure("-1", "添加失败");
+        }
+                
     }
 
 
@@ -70,8 +77,16 @@ public class UserController {
     @SwaggerApiVersion(group = SwaggerApiVersionConstant.WEB_1_0)
     @PostMapping("/id/update")
     public ResultDto<User> updateUser(HttpServletRequest request, @ModelAttribute User user) {
-        boolean b = userService.updateById(user);
-        return b ? ResultDto.success("更新成功") : ResultDto.failure("-1", "更新失败");
+    	
+//    	System.out.println(user);
+    	try {
+	        boolean b = userService.updateById(user);
+	        return b ? ResultDto.success("更新成功") : ResultDto.failure("-1", "更新失败");
+    	}
+    	catch(Exception e) {
+        	e.printStackTrace();
+        	return ResultDto.failure("-1", "更新失败");
+        }
     }
 
     @ApiOperation(value = "我的全部出价记录")
@@ -79,8 +94,7 @@ public class UserController {
     @GetMapping("/id/bid-history")
     public ResultDto<List<Auction>> getBidHistory(HttpServletRequest request, @RequestParam String id) {
         QueryWrapper<Auction> queryWrapper = new QueryWrapper<>();
-        queryWrapper.lambda()
-                .eq(Auction::getBidUesrId, id);
+        queryWrapper.lambda().eq(Auction::getBidUserId, id);
         List<Auction> list = auctionService.list(queryWrapper);
         return ResultDto.success(list);
 

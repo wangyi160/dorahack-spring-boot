@@ -28,7 +28,7 @@ public class User implements Serializable {
     /**
      * 以太坊地址
      */
-    private String matamaskAddress;
+    private String metamaskAddress;
 
     /**
      * 头像链接
