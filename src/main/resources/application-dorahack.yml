@@ -106,3 +106,9 @@ jwt:
 
 resource:
   url: http://resource.liquidnet.xyz
+
+web3:
+  contract-address: '0xE67FB8DC08909Eef8AC32eC50730F3D7130be3b3'
+  private-key: '4bab7b5485652a0366c3cb4bd8ea474815241c6a357f1358387aad7781ba8021'
+  http-provider: http://192.168.205.21:8085/
+

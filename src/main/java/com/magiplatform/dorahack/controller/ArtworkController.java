@@ -90,12 +90,13 @@ public class ArtworkController {
     @ApiOperation(value = "创建1件艺术品（*实际上每个创作者需要创建12个作品才能参与投票及上架）")
     @SwaggerApiVersion(group = SwaggerApiVersionConstant.WEB_1_0)
     @PostMapping("/create")
-    public ResultDto create(HttpServletRequest request, @ModelAttribute Artwork artwork) {
+    public ResultDto<Artwork> create(HttpServletRequest request, @ModelAttribute Artwork artwork) {
         artwork.setId(String.valueOf(customIdGenerator.nextId(artwork)));
         artwork.setStatus(ArtworkConstants.StatusEnum.FINISHED.getCode());
         artwork.setCreateTime(LocalDateTime.now());
         boolean save = artworkService.save(artwork);
-        return save ? ResultDto.success("创建成功") : ResultDto.failure("-1", "创建失败");
+        
+        return save ? ResultDto.success(artwork) : ResultDto.failure("-1", "创建失败");
     }
 
     @ApiOperation(value = "某件艺术品的成交和tx记录")

@@ -25,6 +25,7 @@ import io.swagger.annotations.ApiOperation;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 import org.springframework.web.bind.annotation.*;
 
@@ -97,60 +98,16 @@ public class AuctionController {
     @SwaggerApiVersion(group = SwaggerApiVersionConstant.WEB_1_0)
     @PostMapping("/id/start-auction")
     public ResultDto idStartAuction(HttpServletRequest request, @RequestParam String artId) {
-
-        // 更新状态
-        Artwork artwork = new Artwork();
-        artwork.setId(artId);
-        artwork.setStatus(ArtworkConstants.StatusEnum.ON_AUCTION.getCode());
-        artwork.setUpdateTime(LocalDateTime.now());
-        boolean b = artworkService.updateById(artwork);
-
-        if(!b) {
-        	return ResultDto.failure("-1", "artId不存在");
-        }
         
-        // 查询藏品id最大轮次的竞拍记录
-        QueryWrapper<Auction> queryWrapper = new QueryWrapper<>();
-        queryWrapper.lambda()
-                .eq(Auction::getArtId, artId)
-                .eq(Auction::getIsHighestBid, "true")
-                .orderByDesc(Auction::getAuctionRound)
-                .last("limit 0,1");
-        List<Auction> list = auctionService.list(queryWrapper);
-
-        // 初始化竞拍
-        LocalDateTime now = LocalDateTime.now();
-
-        Auction auction = new Auction();
-        auction.setId(String.valueOf(customIdGenerator.nextUUID(auction)));
-        auction.setArtId(artId);
-        auction.setStartTime(now);
-        auction.setEndTime(now.plusHours(AuctionConstants.AUCTION_PERIOD_HOURS));
-        auction.setStatus(AuctionConstants.StatusEnum.HAPPENING.getCode());
-
-        auction.setCreateTime(now);
-        if (CollectionUtils.isEmpty(list)) {
-            auction.setAuctionRound("1");
-            auction.setStartBidPrice(new BigDecimal(AuctionConstants.AUCTION_DEFAULT_INITIAL_PRICE));
-            auction.setBidCapPrice(new BigDecimal(AuctionConstants.AUCTION_DEFAULT_INITIAL_PRICE * AuctionConstants.AUCTION_PRICE_CAP_RATIO));
-        } else {
-            Auction maxAuction = list.get(0);
-            
-            if(maxAuction.getBidPrice().compareTo(maxAuction.getStartBidPrice())<0) {
-            	return ResultDto.failure("-1", "上轮竞价未完成");
-            }
-            
-            auction.setAuctionRound(String.valueOf(Integer.parseInt(maxAuction.getAuctionRound()) + 1));
-            auction.setStartBidPrice(maxAuction.getBidPrice());
-            auction.setBidCapPrice(maxAuction.getBidPrice().multiply(new BigDecimal(AuctionConstants.AUCTION_PRICE_CAP_RATIO)));
-        }
-        auction.setBidUserId("0");
-        auction.setBidPrice(new BigDecimal("0"));
-        auction.setIsHighestBid("true");
-
-        auctionService.save(auction);
-
-        return b ? ResultDto.success("上架成功") : ResultDto.failure("-1", "上架失败");
+    	try {
+    		auctionService.startAuction(artId);
+    	}
+    	catch(Exception e) {
+    		e.printStackTrace();
+    		return ResultDto.failure("-1", e.getMessage());
+    	}
+        return ResultDto.success("上架成功");
+        
     }
 
     @ApiOperation(value = "给拍卖品出价")
@@ -163,57 +120,14 @@ public class AuctionController {
             @RequestParam String bidPrice,
             @RequestParam String bidUserId
     ) {
-        BigDecimal bidPriceBig = new BigDecimal(bidPrice);
         
-        // 查询藏品id最大轮次的竞拍记录
-        QueryWrapper<Auction> queryWrapper = new QueryWrapper<>();
-        queryWrapper.lambda()
-                .eq(Auction::getArtId, artId)
-                .eq(Auction::getAuctionRound, auctionRound)
-                .eq(Auction::getIsHighestBid, "true")
-                .last("limit 1");
-        Auction currentHighestBid = auctionService.getOne(queryWrapper);
-
-        if(currentHighestBid==null) {
-        	return ResultDto.failure("-1", "未找到artId对应的auction，出价失败");
-        }
-        
-        if (AuctionConstants.StatusEnum.FINISHED.getCode().equals(currentHighestBid.getStatus())) {
-            return ResultDto.failure("-1", "This round is already closed.");
-        }
-        
-        else if (bidPriceBig.compareTo(currentHighestBid.getBidCapPrice()) > 0) {
-            // user's bid > price cap
-            return ResultDto.failure("-1", "Price cap for round " + currentHighestBid.getAuctionRound()
-                    + " is " + currentHighestBid.getBidCapPrice());
-        }
-        else if (bidPriceBig.compareTo(currentHighestBid.getStartBidPrice()) < 0 ||
-        		currentHighestBid.getBidPrice().compareTo(bidPriceBig) > 0  ||
-                currentHighestBid.getBidPrice().compareTo(bidPriceBig) == 0 && bidPriceBig.compareTo(currentHighestBid.getBidCapPrice()) < 0) {
-            // current highest bid > user's bid
-            // Or current highest bid = user's bid < price cap
-            return ResultDto.failure("-1", "Your bid price is too low. ");
-        }
-
-        // 新增竞拍出价
-        Auction newHighestBid = new Auction();
-        BeanUtils.copyProperties(currentHighestBid, newHighestBid);
-        newHighestBid.setId(String.valueOf(customIdGenerator.nextUUID(newHighestBid)));
-        newHighestBid.setBidUserId(bidUserId);
-        newHighestBid.setBidPrice(bidPriceBig);
-        newHighestBid.setBidTime(LocalDateTime.now());
-        newHighestBid.setCreateTime(LocalDateTime.now());
-        auctionService.save(newHighestBid);
-
-        // 更新前一次竞拍出价false
-        if (currentHighestBid.getBidPrice().compareTo(bidPriceBig) < 0) {
-            // if previous highest bid < user's bid, previous bid is no longer the highest bid
-            currentHighestBid.setIsHighestBid("false");
-            auctionService.updateById(currentHighestBid);
-        } else {
-            // in this, previous highest bid = user's bid = price cap
-            // there are multiple rows with isHighestBid flat = true
-        }
+    	try {
+    		auctionService.bidPriceForArt(artId, auctionRound, bidPrice, bidUserId);
+    	}
+    	catch(Exception e) {
+    		e.printStackTrace();
+    		return ResultDto.failure("-1", e.getMessage());
+    	}
 
         return ResultDto.success("出价成功");
     }
@@ -229,9 +143,7 @@ public class AuctionController {
     ) {
         // TODO: call BSC to process the payment
         // Assuming payment is successful, here.
-
-        
-
+    
         // 1. update owner_id, status of artwork_table
         Artwork artwork = artworkService.getById(artId);
         

@@ -10,6 +10,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.servlet.ServletComponentScan;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.core.env.Environment;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -19,8 +21,10 @@ import java.util.Arrays;
 @ServletComponentScan
 @SpringBootApplication
 @ComponentScan(basePackages = {"com.magiplatform.dorahack.**"})
+@EnableTransactionManagement
 @MapperScan("com.magiplatform.dorahack.mapper")
 @EnableConfigurationProperties
+@EnableScheduling 
 public class DorahackApplication implements CommandLineRunner {
 
     @Autowired
