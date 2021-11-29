@@ -23,12 +23,13 @@ public class Casino implements Serializable{
 	private String value;
 	
 	private String method;
+	private String log;
 	
 	private String params;
-		
-	private String wonAmount;
+			
+	private String indexedResult;
 	
-	private String status;
+	private String nonIndexedResult;
 	
 	
 	

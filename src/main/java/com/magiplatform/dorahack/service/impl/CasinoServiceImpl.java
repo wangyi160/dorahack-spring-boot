@@ -1,5 +1,6 @@
 package com.magiplatform.dorahack.service.impl;
 
+import java.io.File;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -10,17 +11,22 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.ResourceUtils;
 import org.web3j.crypto.Credentials;
 import org.web3j.protocol.Web3j;
 import org.web3j.protocol.core.DefaultBlockParameterNumber;
 import org.web3j.protocol.core.methods.response.EthBlock;
 import org.web3j.protocol.core.methods.response.EthBlockNumber;
 import org.web3j.protocol.core.methods.response.EthGetTransactionReceipt;
+import org.web3j.protocol.core.methods.response.TransactionReceipt;
 import org.web3j.protocol.core.methods.response.EthBlock.TransactionObject;
 import org.web3j.protocol.http.HttpService;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.esaulpaugh.headlong.abi.ABIContract;
+import com.esaulpaugh.headlong.abi.EventResult;
 import com.esaulpaugh.headlong.abi.Function;
+import com.esaulpaugh.headlong.abi.FunctionResult;
 import com.esaulpaugh.headlong.abi.Tuple;
 import com.esaulpaugh.headlong.util.FastHex;
 import com.magiplatform.dorahack.contract.CasinoContract;
@@ -79,7 +85,7 @@ public class CasinoServiceImpl extends ServiceImpl<CasinoMapper, Casino> impleme
 			if(nextBlockNumber <= latestBlockNumber) {
 				
 				// 返回casinos, 顺便更新了blockchain
-				List<Casino> casinos = parseContract(blockchain, privateKey, web3);
+				List<Casino> casinos = parseContract(blockchain, web3);
 				
 				for(Casino casino: casinos) {
 					this.save(casino);
@@ -92,57 +98,100 @@ public class CasinoServiceImpl extends ServiceImpl<CasinoMapper, Casino> impleme
 				
 	}
 	
-	
-	public List<Casino> parseContract(Blockchain blockchain, String privateKey, Web3j web3) throws IOException {
-		
+	public List<Casino> parseContract(Blockchain blockchain, Web3j web3) throws IOException {
+				
 		int nextBlockNumber = blockchain.getBlockHeight() + 1;
 		BigInteger balance = new BigInteger(blockchain.getBalance());
 		BigInteger currentBlockNumber = BigInteger.valueOf(nextBlockNumber);
 		
+				
 		EthBlock ethBlock = web3.ethGetBlockByNumber(new DefaultBlockParameterNumber(currentBlockNumber), true).send();
 		if (ethBlock == null || ethBlock.getBlock() == null) {
-            throw new RuntimeException("Block number: " + nextBlockNumber + " was not found");
+            System.out.println("Block number: " + nextBlockNumber + " was not found");
+            return null;
         }
 		
 		List<TransactionObject> list = ethBlock.getBlock().getTransactions().stream()
             .map(TransactionObject.class::cast)
             .collect(Collectors.toList());
 		
-		Credentials credentials = Credentials.create(privateKey);
-		CasinoContract contract = CasinoContract.load(blockchain.getContractAddress(), web3, credentials, 
-				BigInteger.valueOf(200000000), BigInteger.valueOf(2100000));
+		File file = ResourceUtils.getFile( "classpath:abis/Casino.abi");
+		System.out.println(file);
 		
+//		String src = "abis/Casino.abi";
+//		File file = new File(src);
+	    	
+		ABIContract contract = new ABIContract(file);
 		
 		List<Casino> ret = new ArrayList<>();
-		
+				
 		for(TransactionObject to: list) {
 			
 			System.out.println(to.getTo());
-			
-			// 创建合约的交易
-			if(to.getTo()==null) {
-				EthGetTransactionReceipt tr = web3.ethGetTransactionReceipt(to.getHash()).send();
-												
-				if (tr.getTransactionReceipt().isPresent() && 
-						tr.getTransactionReceipt().get().getContractAddress().toLowerCase().equals(blockchain.getContractAddress().toLowerCase())) {
-				    
-					// hack, 由于headlong并不能正确的解析constructor，因此提取参数，并附加上d7777c36
-					String parameters = "d7777c36" + to.getInput().substring(to.getInput().length()-128);					
-					System.out.println(parameters);
+						
+			// to的地址与contract相同，说明是call合约
+			if(to.getTo()!=null && to.getTo().toLowerCase().equals(blockchain.getContractAddress().toLowerCase())) {
+				
+				FunctionResult fr = contract.decodeCall(to.getInput());
+				System.out.println("FunctionCall:");
+				System.out.println(fr);
+				
+				balance = balance.add(to.getValue());
+			    System.out.println(balance);
+			    			    
+								
+				// 解析合约的log
+				EthGetTransactionReceipt etr = web3.ethGetTransactionReceipt(to.getHash()).send();
+				
+				if (etr.getTransactionReceipt().isPresent()) {
+					TransactionReceipt tr = etr.getTransactionReceipt().get();
 					
-				    String params = decodeConstructorInput(parameters);
-				    
-				    balance = balance.add(to.getValue());
-				    System.out.println(balance);
-				    
-				    Casino casino = new Casino();
+					List<EventResult> ers = contract.decodeEvent(tr);
+					
+					System.out.println("Events:");
+					
+					for(EventResult er: ers) {
+						System.out.println(er);
+						
+					}
+					
+					int count = 0;
+					for(EventResult er: ers) {
+						Casino casino = new Casino();
+					    casino.setAddress(blockchain.getContractAddress());
+					    casino.setBlockHeight(nextBlockNumber);
+					    casino.setFromAddress(to.getFrom());
+					    casino.setMethod(fr.getName());
+					    casino.setParams(fr.getResult().toString());
+					    casino.setTransactionHash(to.getHash());
+					    casino.setValue(to.getValue().toString());
+					    
+					    casino.setLog(er.getName()+":"+(count++));
+					    
+					    if(er.getIndexedResult()!=null)
+					    	casino.setIndexedResult(er.getIndexedResult().toString());
+					    
+					    if(er.getNonIndexedResult()!=null)
+					    	casino.setNonIndexedResult(er.getNonIndexedResult().toString());
+					    					    
+					    ret.add(casino);
+					    
+					    // 根据log更新balance
+					    balance = updateBalance(balance, er);
+					    System.out.println(balance);			    
+					}
+										
+				}
+				else {
+					Casino casino = new Casino();
 				    casino.setAddress(blockchain.getContractAddress());
 				    casino.setBlockHeight(nextBlockNumber);
 				    casino.setFromAddress(to.getFrom());
-				    casino.setMethod("constructor");
-				    casino.setParams(params);
+				    casino.setMethod(fr.getName());
+				    casino.setParams(fr.getResult().toString());
 				    casino.setTransactionHash(to.getHash());
 				    casino.setValue(to.getValue().toString());
+				    casino.setLog("");
 				    
 				    ret.add(casino);
 				}
@@ -150,120 +199,206 @@ public class CasinoServiceImpl extends ServiceImpl<CasinoMapper, Casino> impleme
 				
 			}
 			
-			// to的地址与contract相同，说明是call合约
-			else if(to.getTo()!=null && to.getTo().toLowerCase().equals(blockchain.getContractAddress().toLowerCase())) {
-//				ret.add(to);
-				
-				// 解析合约的input
-				String parameters = to.getInput().substring(2);
-				System.out.println(parameters);
-				String params = decodeFunctionInput(parameters);
-				
-				balance = balance.add(to.getValue());
-			    System.out.println(balance);
-			    
-			    Casino casino = new Casino();
-			    casino.setAddress(blockchain.getContractAddress());
-			    casino.setBlockHeight(nextBlockNumber);
-			    casino.setFromAddress(to.getFrom());
-			    casino.setMethod("bet");
-			    casino.setParams(params);
-			    casino.setTransactionHash(to.getHash());
-			    casino.setValue(to.getValue().toString());
-			    
-			    
-								
-				// 解析合约的log
-				EthGetTransactionReceipt tr = web3.ethGetTransactionReceipt(to.getHash()).send();
-				
-				if (tr.getTransactionReceipt().isPresent()) {
-					List<WonEventResponse> responses = contract.getWonEvents(tr.getTransactionReceipt().get());
-					
-					for(WonEventResponse resp: responses) {
-						System.out.println(resp._amount);
-						System.out.println(resp._status);
-						
-						casino.setWonAmount(resp._amount.toString());
-						casino.setStatus(resp._status.toString());
-						
-						balance = balance.subtract(resp._amount);
-					    System.out.println(balance);
-						
-					}
-				}
-				
-				ret.add(casino);
-								
-			}
-			
 		}
 		
 		blockchain.setBalance(balance.toString());
 		blockchain.setBlockHeight(nextBlockNumber);
-				
-		return ret;
+		
+		
+		return ret;	
+		
 	}
 	
-	public String decodeConstructorInput(String input) {
+	private BigInteger updateBalance(BigInteger balance, EventResult er) {
 		
-		Function foo = Function.fromJson(
-			  "{\r\n"
-			  + "			\"inputs\": [\r\n"
-			  + "				{\r\n"
-			  + "					\"internalType\": \"uint256\",\r\n"
-			  + "					\"name\": \"_minBet\",\r\n"
-			  + "					\"type\": \"uint256\"\r\n"
-			  + "				},\r\n"
-			  + "				{\r\n"
-			  + "					\"internalType\": \"uint256\",\r\n"
-			  + "					\"name\": \"_houseEdge\",\r\n"
-			  + "					\"type\": \"uint256\"\r\n"
-			  + "				}\r\n"
-			  + "			],\r\n"
-			  + "			\"stateMutability\": \"payable\",\r\n"
-			  + "			\"type\": \"constructor\"\r\n"
-			  + "		}"
-		);
-		
-		Tuple decoded = foo.decodeCall(	FastHex.decode(input));
-		
-		for(Object o: decoded) {
-			System.out.println(o.getClass());
+		if(er.getName().equals("Won")) {
+			// 因为indexed为false， 所以只需要取non indexed
+			
+			Tuple result = er.getNonIndexedResult();
+			Boolean boolObj = (Boolean) result.get(0);
+			BigInteger bigObj = (BigInteger) result.get(1);
+			
+			if(Boolean.TRUE.equals(boolObj)) {
+				balance = balance.subtract(bigObj);
+			}
 		}
 		
-		System.out.println(decoded);
-		return decoded.toString();
+		return balance;
 		
 	}
 	
-	public String decodeFunctionInput(String input) {
-		
-		Function foo = Function.fromJson(
 	
-				"{\r\n"
-				+ "			\"inputs\": [\r\n"
-				+ "				{\r\n"
-				+ "					\"internalType\": \"uint256\",\r\n"
-				+ "					\"name\": \"_number\",\r\n"
-				+ "					\"type\": \"uint256\"\r\n"
-				+ "				}\r\n"
-				+ "			],\r\n"
-				+ "			\"name\": \"bet\",\r\n"
-				+ "			\"outputs\": [],\r\n"
-				+ "			\"stateMutability\": \"payable\",\r\n"
-				+ "			\"type\": \"function\"\r\n"
-				+ "		}"
-				);
-		
-		Tuple decoded = foo.decodeCall(	FastHex.decode(input));
-		
-		for(Object o: decoded) {
-			System.out.println(o.getClass());
-		}
-		
-		System.out.println(decoded);
-		return decoded.toString();
-	}
+//	public List<Casino> parseContract(Blockchain blockchain, String privateKey, Web3j web3) throws IOException {
+//		
+//		int nextBlockNumber = blockchain.getBlockHeight() + 1;
+//		BigInteger balance = new BigInteger(blockchain.getBalance());
+//		BigInteger currentBlockNumber = BigInteger.valueOf(nextBlockNumber);
+//		
+//		EthBlock ethBlock = web3.ethGetBlockByNumber(new DefaultBlockParameterNumber(currentBlockNumber), true).send();
+//		if (ethBlock == null || ethBlock.getBlock() == null) {
+//            throw new RuntimeException("Block number: " + nextBlockNumber + " was not found");
+//        }
+//		
+//		List<TransactionObject> list = ethBlock.getBlock().getTransactions().stream()
+//            .map(TransactionObject.class::cast)
+//            .collect(Collectors.toList());
+//		
+//		Credentials credentials = Credentials.create(privateKey);
+//		CasinoContract contract = CasinoContract.load(blockchain.getContractAddress(), web3, credentials, 
+//				BigInteger.valueOf(200000000), BigInteger.valueOf(2100000));
+//		
+//		
+//		List<Casino> ret = new ArrayList<>();
+//		
+//		for(TransactionObject to: list) {
+//			
+//			System.out.println(to.getTo());
+//			
+//			// 创建合约的交易
+//			if(to.getTo()==null) {
+//				EthGetTransactionReceipt tr = web3.ethGetTransactionReceipt(to.getHash()).send();
+//												
+//				if (tr.getTransactionReceipt().isPresent() && 
+//						tr.getTransactionReceipt().get().getContractAddress().toLowerCase().equals(blockchain.getContractAddress().toLowerCase())) {
+//				    
+//					// hack, 由于headlong并不能正确的解析constructor，因此提取参数，并附加上d7777c36
+//					String parameters = "d7777c36" + to.getInput().substring(to.getInput().length()-128);					
+//					System.out.println(parameters);
+//					
+//				    String params = decodeConstructorInput(parameters);
+//				    
+//				    balance = balance.add(to.getValue());
+//				    System.out.println(balance);
+//				    
+//				    Casino casino = new Casino();
+//				    casino.setAddress(blockchain.getContractAddress());
+//				    casino.setBlockHeight(nextBlockNumber);
+//				    casino.setFromAddress(to.getFrom());
+//				    casino.setMethod("constructor");
+//				    casino.setParams(params);
+//				    casino.setTransactionHash(to.getHash());
+//				    casino.setValue(to.getValue().toString());
+//				    
+//				    ret.add(casino);
+//				}
+//				
+//				
+//			}
+//			
+//			// to的地址与contract相同，说明是call合约
+//			else if(to.getTo()!=null && to.getTo().toLowerCase().equals(blockchain.getContractAddress().toLowerCase())) {
+////				ret.add(to);
+//				
+//				// 解析合约的input
+//				String parameters = to.getInput().substring(2);
+//				System.out.println(parameters);
+//				String params = decodeFunctionInput(parameters);
+//				
+//				balance = balance.add(to.getValue());
+//			    System.out.println(balance);
+//			    
+//			    Casino casino = new Casino();
+//			    casino.setAddress(blockchain.getContractAddress());
+//			    casino.setBlockHeight(nextBlockNumber);
+//			    casino.setFromAddress(to.getFrom());
+//			    casino.setMethod("bet");
+//			    casino.setParams(params);
+//			    casino.setTransactionHash(to.getHash());
+//			    casino.setValue(to.getValue().toString());
+//			    
+//			    
+//								
+//				// 解析合约的log
+//				EthGetTransactionReceipt tr = web3.ethGetTransactionReceipt(to.getHash()).send();
+//				
+//				if (tr.getTransactionReceipt().isPresent()) {
+//					List<WonEventResponse> responses = contract.getWonEvents(tr.getTransactionReceipt().get());
+//					
+//					for(WonEventResponse resp: responses) {
+//						System.out.println(resp._amount);
+//						System.out.println(resp._status);
+//						
+//						casino.setWonAmount(resp._amount.toString());
+//						casino.setStatus(resp._status.toString());
+//						
+//						balance = balance.subtract(resp._amount);
+//					    System.out.println(balance);
+//						
+//					}
+//				}
+//				
+//				ret.add(casino);
+//								
+//			}
+//			
+//		}
+//		
+//		blockchain.setBalance(balance.toString());
+//		blockchain.setBlockHeight(nextBlockNumber);
+//				
+//		return ret;
+//	}
+//	
+//	public String decodeConstructorInput(String input) {
+//		
+//		Function foo = Function.fromJson(
+//			  "{\r\n"
+//			  + "			\"inputs\": [\r\n"
+//			  + "				{\r\n"
+//			  + "					\"internalType\": \"uint256\",\r\n"
+//			  + "					\"name\": \"_minBet\",\r\n"
+//			  + "					\"type\": \"uint256\"\r\n"
+//			  + "				},\r\n"
+//			  + "				{\r\n"
+//			  + "					\"internalType\": \"uint256\",\r\n"
+//			  + "					\"name\": \"_houseEdge\",\r\n"
+//			  + "					\"type\": \"uint256\"\r\n"
+//			  + "				}\r\n"
+//			  + "			],\r\n"
+//			  + "			\"stateMutability\": \"payable\",\r\n"
+//			  + "			\"type\": \"constructor\"\r\n"
+//			  + "		}"
+//		);
+//		
+//		Tuple decoded = foo.decodeCall(	FastHex.decode(input));
+//		
+//		for(Object o: decoded) {
+//			System.out.println(o.getClass());
+//		}
+//		
+//		System.out.println(decoded);
+//		return decoded.toString();
+//		
+//	}
+//	
+//	public String decodeFunctionInput(String input) {
+//		
+//		Function foo = Function.fromJson(
+//	
+//				"{\r\n"
+//				+ "			\"inputs\": [\r\n"
+//				+ "				{\r\n"
+//				+ "					\"internalType\": \"uint256\",\r\n"
+//				+ "					\"name\": \"_number\",\r\n"
+//				+ "					\"type\": \"uint256\"\r\n"
+//				+ "				}\r\n"
+//				+ "			],\r\n"
+//				+ "			\"name\": \"bet\",\r\n"
+//				+ "			\"outputs\": [],\r\n"
+//				+ "			\"stateMutability\": \"payable\",\r\n"
+//				+ "			\"type\": \"function\"\r\n"
+//				+ "		}"
+//				);
+//		
+//		Tuple decoded = foo.decodeCall(	FastHex.decode(input));
+//		
+//		for(Object o: decoded) {
+//			System.out.println(o.getClass());
+//		}
+//		
+//		System.out.println(decoded);
+//		return decoded.toString();
+//	}
 	
 	
 	
